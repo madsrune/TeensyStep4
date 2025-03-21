@@ -46,7 +46,7 @@ namespace TS4
         volatile int32_t target;
 
         int32_t s_tgt;
-        int32_t v_tgt, v_tgt_orig;
+        int32_t v_tgt;
         int64_t v_tgt_sqr;
 
         int32_t twoA;

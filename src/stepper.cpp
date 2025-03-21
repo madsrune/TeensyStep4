@@ -8,9 +8,14 @@
 
 namespace TS4
 {
-    Stepper& Stepper::setMaxSpeed(int32_t speed)
+    Stepper& Stepper::setMaxSpeed(int32_t speed, bool force)
     {
         vMax = constrain(speed, -vMaxMax, vMaxMax);
+        
+        if (force && isMoving) {
+            overrideSpeed(vMax);
+        }
+        
         return *this;
     }
 

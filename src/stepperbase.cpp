@@ -20,7 +20,6 @@ namespace TS4
     void StepperBase::startRotate(int32_t _v_tgt, uint32_t a)
     {
         v_tgt      = _v_tgt;
-        v_tgt_orig = v_tgt;
         v_tgt_sqr  = (int64_t)signum(v_tgt) * v_tgt * v_tgt;
         vDir       = (int32_t)signum(v_tgt_sqr - v_sqr);
         twoA       = 2 * a;
@@ -57,7 +56,6 @@ namespace TS4
         // v_sqr      = (int64_t) v * v;
         v_sqr     = 0;
         v         = 0;
-        v_tgt_orig = v_tgt;
         v_tgt_sqr = (int64_t)v_tgt * v_tgt;
 
         int64_t accLength = (v_tgt_sqr - v_sqr) / twoA + 1;

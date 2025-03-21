@@ -14,7 +14,7 @@ namespace TS4
         int32_t getPosition() const { return pos; }
         void setPosition(int32_t p) { pos = p; }
 
-        Stepper& setMaxSpeed(int32_t speed);          // steps/s
+        Stepper& setMaxSpeed(int32_t speed, bool force = false);   // steps/s
                                                        // StepperBase& setVStart(int32_t vIn);              // steps/s
                                                        // StepperBase& setVStop(int32_t vIn);               // steps/s
         Stepper& setAcceleration(uint32_t _a);         // steps/s^2
