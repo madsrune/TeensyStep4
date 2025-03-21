@@ -117,8 +117,13 @@ namespace TS4
         v_sqr    = 0;
     }
 
-    void StepperBase::overrideSpeed(int32_t newSpeed)
+    void StepperBase::overrideSpeed(int32_t newSpeed, uint32_t acceleration)
     {
+        // If acceleration is provided, update twoA
+        if (acceleration > 0) {
+            twoA = 2 * acceleration;
+        }
+
         noInterrupts(); // Critical section - avoid ISR conflicts
         
         if (mode == mmode_t::rotate)
@@ -132,33 +137,78 @@ namespace TS4
         {
             // Ensure we're using the absolute value for target mode
             int32_t v_tgt_abs = std::abs(newSpeed);
-            v_tgt = v_tgt_abs;
-            v_tgt_sqr = (int64_t)v_tgt * v_tgt;
             
             // Calculate position within the movement profile
             int32_t remaining = s_tgt - s;
             
-            // Only recalculate acceleration if we're still in acceleration or constant speed phase
+            // Only recalculate profile if we're not already decelerating
             if (s < decStart) {
-                // Calculate new acceleration length based on new max speed
-                int64_t accLength = (v_tgt_sqr - v_sqr) / twoA + 1;
+                // Calculate distance needed to decelerate from current speed to zero
+                int64_t currentStoppingDistance = v_sqr / twoA;
                 
-                // If we're already accelerating, only update accEnd
-                if (s < accEnd) {
-                    // Ensure we don't accelerate more than half the total remaining distance
-                    if (accLength >= remaining / 2) accLength = remaining / 2;
-                    accEnd = s + accLength - 1;
-                }
+                // Maximum remaining distance available for acceleration and constant speed
+                int64_t availableDistance = remaining - currentStoppingDistance;
                 
-                // Update deceleration start point whether we're accelerating or at constant speed
-                decStart = s_tgt - accLength;
-                
-                // Ensure we have a valid profile (accEnd must be before decStart)
-                if (accEnd >= decStart) {
-                    // Not enough distance for full acceleration/deceleration
-                    // Set the crossover point in the middle
-                    accEnd = s + remaining / 2 - 1;
-                    decStart = s + remaining / 2;
+                if (availableDistance > 0) {
+                    // Calculate the maximum speed that can be safely reached and then decelerated from
+                    // v_max^2 / (2*a) = availableDistance => v_max^2 = 2*a*availableDistance
+                    int64_t max_v_sqr = twoA * availableDistance;
+                    
+                    // Constrain the new target speed
+                    int64_t new_v_tgt_sqr = (int64_t)v_tgt_abs * v_tgt_abs;
+                    if (new_v_tgt_sqr > max_v_sqr) {
+                        // Reduce the target speed if it's too high
+                        v_tgt_abs = sqrtf(max_v_sqr);
+                    }
+                    
+                    v_tgt = v_tgt_abs;
+                    v_tgt_sqr = (int64_t)v_tgt * v_tgt;
+                    
+                    // Recalculate motion profile
+                    
+                    // Calculate distance needed for deceleration from the target speed
+                    int64_t decDistance = v_tgt_sqr / twoA;
+                    
+                    // If we're still in acceleration phase
+                    if (s < accEnd) {
+                        // Calculate distance needed to reach target speed from current speed
+                        int64_t accDistance = (v_tgt_sqr - v_sqr) / twoA;
+                        
+                        // If we can reach target speed
+                        if (accDistance + decDistance <= remaining) {
+                            // Update acceleration end point
+                            accEnd = s + accDistance;
+                            
+                            // Update deceleration start point
+                            decStart = s_tgt - decDistance;
+                        } else {
+                            // Not enough distance for full acceleration/deceleration
+                            // Calculate peak speed we can reach
+                            int64_t peak_v_sqr = (remaining * twoA) / 2;
+                            
+                            // Calculate distance to reach this peak speed
+                            int64_t peak_accDistance = (peak_v_sqr - v_sqr) / twoA;
+                            
+                            // Update motion profile
+                            accEnd = s + peak_accDistance;
+                            decStart = accEnd + 1; // Start decelerating immediately after acceleration
+                        }
+                    } 
+                    // If we're in constant speed phase
+                    else {
+                        // Update deceleration start point based on new target speed
+                        decStart = s_tgt - decDistance;
+                        
+                        // If we need to start decelerating immediately
+                        if (s >= decStart) {
+                            decStart = s;
+                        }
+                    }
+                } else {
+                    // Not enough distance to change speed safely, need to decelerate now
+                    decStart = s;
+                    v_tgt = 0;
+                    v_tgt_sqr = 0;
                 }
             }
             // If we're already decelerating, don't change the profile

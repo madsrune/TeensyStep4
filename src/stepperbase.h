@@ -18,8 +18,8 @@ namespace TS4
         std::string name;
         bool isMoving = false;
         void emergencyStop();
-        void overrideSpeed(int32_t newSpeed);
-
+        void overrideSpeed(int32_t newSpeed, uint32_t acceleration = 0);
+        
         // Add enum class definition outside of protected for Stepper access
         enum class mmode_t {
             target,
@@ -128,10 +128,26 @@ namespace TS4
         } 
         else if (s < decStart) { 
             // In constant speed phase
-            v = std::min(sqrtf(v_sqr), sqrtf(v_tgt_sqr));
+            // If our target speed changed mid-movement
+            if (v_sqr != v_tgt_sqr) {
+                // Check if we need to accelerate or decelerate to reach target speed
+                int64_t velocity_diff = v_tgt_sqr - v_sqr;
+                
+                if (velocity_diff > 0) {  // Need to accelerate
+                    // Don't accelerate faster than our acceleration limit
+                    int64_t delta_v = std::min(static_cast<int64_t>(twoA), velocity_diff);
+                    v_sqr += delta_v;
+                } else {  // Need to decelerate
+                    // Don't decelerate faster than our acceleration limit
+                    int64_t delta_v = std::min(static_cast<int64_t>(twoA), -velocity_diff);
+                    v_sqr -= delta_v;
+                }
+            }
+            
+            v = sqrtf(v_sqr);
             stpTimer->updateFrequency(std::abs(v));
             doStep();
-        } 
+        }
         else if (s < s_tgt) { 
             // In deceleration phase
             v_sqr -= twoA;
