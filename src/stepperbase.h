@@ -18,8 +18,17 @@ namespace TS4
         std::string name;
         bool isMoving = false;
         void emergencyStop();
-        void overrideSpeed(float factor);
+        void overrideSpeed(int32_t newSpeed);
 
+        // Add enum class definition outside of protected for Stepper access
+        enum class mmode_t {
+            target,
+            rotate,
+            stopping,
+        };
+        
+        // Add a getter to access the current mode
+        mmode_t getMode() const { return mode; }
 
      protected:
         StepperBase(const int stepPin, const int dirPin);
@@ -56,19 +65,16 @@ namespace TS4
         inline void rotISR();
         inline void resetISR();
 
-        enum class mode_t {
-            target,
-            rotate,
-            stopping,
-        } mode = mode_t::target;
+        mmode_t mode = mmode_t::target;
 
         // Bresenham:
         StepperBase* next = nullptr; // linked list of steppers, maintained from outside
         int32_t A, B;                // Bresenham parameters (https://en.wikipedia.org/wiki/Bresenham)
 
         friend class StepperGroupBase;
+        friend class Stepper; // Add Stepper as a friend class for direct access
     };
-
+    
     //========================================================================================================
     // Inline implementation
     //========================================================================================================
@@ -95,137 +101,175 @@ namespace TS4
 
     void StepperBase::stepISR()
     {
-        if (mode == mode_t::stopping){
-            mode = mode_t::target;
-            if (s < accEnd)                                     // still accelerating
-            {
-                accEnd = decStart = 0;                          // start deceleration
-                s_tgt             = 2 * s;                      // we need the same way to decelerate as we traveled so far
-            } else if (s < decStart)                            // constant speed phase
-            {
-                decStart = 0;                                   // start deceleration
-                s_tgt    = s + accEnd;                          // normal deceleration distance  ds = distance to end
+        // Setup phase - handle stopping mode at the start
+        if (mode == mmode_t::stopping) {
+            // When stopping, always target zero velocity
+            v_tgt_sqr = 0;
+            
+            // Force immediate deceleration regardless of current phase
+            if (s < decStart) {
+                // If we're in acceleration or constant speed phase,
+                // calculate distance needed to stop and begin deceleration
+                int32_t stoppingDistance = v_sqr / twoA;  // twoA is already 2*a
+                accEnd = s;       // End acceleration immediately
+                decStart = s;     // Start deceleration immediately
+                s_tgt = s + stoppingDistance;
             }
+            // If already in deceleration phase, continue with current parameters
         }
 
-        if (s < accEnd) // accelerating
-        {
-            v = signum(v_sqr) * sqrtf(std::abs(v_sqr));
+        // Execution phase - use the parameters set above
+        if (s < accEnd) { 
+            // In acceleration phase - use twoA to adjust velocity
             v_sqr += twoA;
-            stpTimer->updateFrequency(std::abs(v));
-            doStep();
-        } else if (s < decStart) // constant speed
-        {
-            v = std::min(sqrtf(v_sqr), sqrtf(v_tgt_sqr));
-            stpTimer->updateFrequency(v);
-            doStep();
-        } else if (s < s_tgt) // decelerating
-        {
-            v_sqr -= twoA;
             v = signum(v_sqr) * sqrtf(std::abs(v_sqr));
             stpTimer->updateFrequency(std::abs(v));
             doStep();
-        } else // target reached
-        {
+        } 
+        else if (s < decStart) { 
+            // In constant speed phase
+            v = std::min(sqrtf(v_sqr), sqrtf(v_tgt_sqr));
+            stpTimer->updateFrequency(std::abs(v));
+            doStep();
+        } 
+        else if (s < s_tgt) { 
+            // In deceleration phase
+            v_sqr -= twoA;
+            
+            // Check if we've decelerated to zero or below
+            if (v_sqr <= 0) {
+                v_sqr = 0;
+                v = 0;
+                
+                // Update target to match actual position if in stopping mode
+                if (mode == mmode_t::stopping) {
+                    target = pos;
+                }
+                
+                // Clean up and stop
+                stpTimer->stop();
+                TimerFactory::returnTimer(stpTimer);
+                stpTimer = nullptr;
+                
+                auto *cur = this;
+                while (cur != nullptr) {
+                    auto *tmp = cur->next;
+                    cur->next = nullptr;
+                    cur = tmp;
+                }
+                
+                isMoving = false;
+                return;
+            }
+            
+            v = signum(v_sqr) * sqrtf(std::abs(v_sqr));
+            stpTimer->updateFrequency(std::abs(v));
+            doStep();
+        } 
+        else { 
+            // Target reached
+            // Update target to match actual position if in stopping mode
+            if (mode == mmode_t::stopping) {
+                target = pos;
+            }
+            
             stpTimer->stop();
             TimerFactory::returnTimer(stpTimer);
             stpTimer = nullptr;
+            
             auto *cur = this;
-            while (cur != nullptr) // hack, remove slave motors
-            {
+            while (cur != nullptr) {
                 auto *tmp = cur->next;
                 cur->next = nullptr;
                 cur = tmp;
             }
+            
             isMoving = false;
         }
     }
 
     void StepperBase::rotISR()
     {
-        mode = mode_t::rotate;
+        // Set to rotate mode unless we're stopping
+        if (mode != mmode_t::stopping) {
+            mode = mmode_t::rotate;
+        }
+        
         int32_t v_abs;
 
         if (std::abs(v_sqr - v_tgt_sqr) > twoA) // target speed not yet reached
         {
-            v_sqr += vDir * twoA;
+            // If we're stopping, decelerate regardless of target speed
+            if (mode == mmode_t::stopping) {
+                // Decelerate toward zero
+                v_sqr -= vDir * twoA;
+                
+                // If we've decelerated to near zero or crossed zero, stop completely
+                if ((vDir > 0 && v_sqr <= 0) || (vDir < 0 && v_sqr >= 0)) {
+                    v_sqr = 0;
+                    // Update target to current position since we're stopping here
+                    target = pos;
+                    
+                    // Clean up and stop
+                    stpTimer->stop();
+                    TimerFactory::returnTimer(stpTimer);
+                    stpTimer = nullptr;
+                    
+                    auto *cur = this;
+                    while (cur != nullptr) {
+                        auto *tmp = cur->next;
+                        cur->next = nullptr;
+                        cur = tmp;
+                    }
+                    
+                    isMoving = false;
+                    return;
+                }
+            } else {
+                // Normal acceleration/deceleration toward target speed
+                v_sqr += vDir * twoA;
+            }
 
             dir = signum(v_sqr);
             digitalWriteFast(dirPin, dir > 0 ? HIGH : LOW);
             delayMicroseconds(5);
 
             v_abs = sqrtf(std::abs(v_sqr));
-            //SerialUSB.printf("vabs % d\n",v_abs);
             stpTimer->updateFrequency(v_abs);
             doStep();
-        } else
+        } 
+        else // At target speed
         {
-            //SerialUSB.println("rotISR reached");
             dir = signum(v_sqr);
             digitalWriteFast(dirPin, dir > 0 ? HIGH : LOW);
             delayMicroseconds(5);
 
-            if (v_tgt != 0)
+            if (v_tgt != 0 || mode != mmode_t::stopping)
             {
                 v_abs = sqrtf(std::abs(v_sqr));
-                //SerialUSB.printf("vabs % d\n",v_abs);
                 stpTimer->updateFrequency(v_abs);
                 doStep();
-            } else
+            } 
+            else // We're at target speed of 0 or stopping mode reached 0
             {
-                //SerialUSB.printf("rotISR %s stopped\n", name.c_str());
+                // Update target to current position since we're stopping here
+                target = pos;
+                
                 stpTimer->stop();
                 TimerFactory::returnTimer(stpTimer);
                 stpTimer = nullptr;
                 v_sqr = 0;
 
                 auto *cur = this;
-                while (cur != nullptr) // hack, remove slave motors
-                {
+                while (cur != nullptr) {
                     auto *tmp = cur->next;
                     cur->next = nullptr;
                     cur = tmp;
                 }
+                
                 isMoving = false;
             }
         }
-
-        // {
-        //     //      Serial.println("rot0");
-        //     int32_t v_abs;
-        //     if (vDir * (v_tgt_sqr - v_sqr) > twoA)
-        //     {
-        //         v_sqr += vDir * twoA;
-
-        //         digitalWriteFast(dirPin, signum(v_sqr) > 0 ? HIGH : LOW);
-        //         delayMicroseconds(5);
-
-        //         v_abs = sqrtf(std::abs(v_sqr));
-        //         stpTimer->updateFrequency(v_abs);
-        //         doStep();
-        //     } else
-        //     {
-        //         //      Serial.println("rot2");
-        //         v_abs = sqrtf(std::abs(v_tgt_sqr));
-        //         v = signum(v_tgt_sqr) * v_abs;
-
-        //         if (mode != mode_t::stopping)
-        //         {
-        //             stpTimer->updateFrequency(v_abs);
-        //             doStep();
-        //         } else
-        //         {
-        //             stpTimer->stop();
-        //             TimerFactory::returnTimer(stpTimer);
-        //             stpTimer = nullptr;
-        //             isMoving = false;
-        //             v = 0;
-        //             v_sqr = 0;
-        //             //       Serial.println("stopped");
-        //         }
-        //     }
-
-        //     pos += signum(v);
     }
 
     void StepperBase::resetISR()
