@@ -19,7 +19,7 @@ namespace TS4
         bool isMoving = false;
         void emergencyStop();
         void overrideSpeed(int32_t newSpeed, uint32_t acceleration = 0);
-        
+
         // Add enum class definition outside of protected for Stepper access
         enum class mmode_t {
             target,
@@ -150,34 +150,7 @@ namespace TS4
         }
         else if (s < s_tgt) { 
             // In deceleration phase
-            v_sqr -= twoA;
-            
-            // Check if we've decelerated to zero or below
-            if (v_sqr <= 0) {
-                v_sqr = 0;
-                v = 0;
-                
-                // Update target to match actual position if in stopping mode
-                if (mode == mmode_t::stopping) {
-                    target = pos;
-                }
-                
-                // Clean up and stop
-                stpTimer->stop();
-                TimerFactory::returnTimer(stpTimer);
-                stpTimer = nullptr;
-                
-                auto *cur = this;
-                while (cur != nullptr) {
-                    auto *tmp = cur->next;
-                    cur->next = nullptr;
-                    cur = tmp;
-                }
-                
-                isMoving = false;
-                return;
-            }
-            
+            v_sqr -= twoA;            
             v = signum(v_sqr) * sqrtf(std::abs(v_sqr));
             stpTimer->updateFrequency(std::abs(v));
             doStep();
